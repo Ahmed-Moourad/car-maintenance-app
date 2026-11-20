@@ -23,6 +23,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import urllib.request
 import smtplib
 import ssl
@@ -138,17 +139,30 @@ def fetch_value_ranges(sheet_id, sa_info):
         timeout=30)
     if resp.status_code != 200:
         hint = {403: " (share the Sheet with the service account's email as Viewer, and enable the Google Sheets API)",
-                404: " (check SHEET_ID)", 400: " (the Sheet needs tabs named Settings and Items)"}.get(resp.status_code, "")
+                404: (" (Google can't find a Sheet with that id for this service account. Check: (1) SHEET_ID is only the part between"
+                      " /d/ and /edit in the Sheet URL; (2) the file is a native Google Sheet, not an uploaded .xlsx;"
+                      " (3) the Sheet is shared with the service account's client_email as Viewer)"),
+                400: " (the Sheet needs tabs named Settings and Items, and must be a native Google Sheet, not .xlsx)"}.get(resp.status_code, "")
         sys.exit(f"Google Sheets API error {resp.status_code}{hint}: {resp.text[:300]}")
     return resp.json().get("valueRanges", [])
 
 
+def normalize_sheet_id(raw):
+    """Accept a bare id, or a pasted URL / quoted value, and return just the id."""
+    raw = (raw or "").strip().strip("\"'").strip()
+    m = re.search(r"/d/([A-Za-z0-9_-]+)", raw)
+    return m.group(1) if m else raw
+
+
 def load_data(value_ranges=None):
     if value_ranges is None:
-        sheet_id = (os.environ.get("SHEET_ID") or "").strip()
+        sheet_id = normalize_sheet_id(os.environ.get("SHEET_ID"))
         sa_raw = os.environ.get("GOOGLE_SA_JSON") or ""
         if not sheet_id or not sa_raw:
             sys.exit("Set the SHEET_ID and GOOGLE_SA_JSON GitHub secrets.")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{25,}", sheet_id):
+            sys.exit(f"SHEET_ID doesn't look like a Google Sheet id (got {len(sheet_id)} characters). "
+                     "It should be the long part between /d/ and /edit in the Sheet URL.")
         value_ranges = fetch_value_ranges(sheet_id, json.loads(sa_raw))
     settings = {str(r["key"]).strip(): r.get("value") for r in values_to_rows(value_ranges[0].get("values")) if r.get("key")}
     items = values_to_rows(value_ranges[1].get("values"))
